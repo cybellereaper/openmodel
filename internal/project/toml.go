@@ -7,9 +7,16 @@ import (
 )
 
 // Dependency describes a PureLang dependency in pure.toml.
+//
+// A dependency is either:
+//   - Git-backed: Git is set; one of Version, Branch, Commit is set.
+//   - Registry-backed (purepkg): Pkg is set with a package name; Version
+//     gives the desired version. The dependency manager resolves Pkg to
+//     a git URL and ref by talking to the registry.
 type Dependency struct {
 	Name    string
 	Git     string
+	Pkg     string
 	Version string
 	Branch  string
 	Commit  string
@@ -202,6 +209,8 @@ func parseDependencyValue(name, v string, lineNo int) (Dependency, error) {
 		switch key {
 		case "git":
 			dep.Git = s
+		case "pkg":
+			dep.Pkg = s
 		case "version":
 			dep.Version = s
 		case "branch":
@@ -271,7 +280,12 @@ func EncodeTOML(data *TOMLData) string {
 	for _, n := range names {
 		dep := data.Dependencies[n]
 		var parts []string
-		parts = append(parts, fmt.Sprintf("git = %q", dep.Git))
+		if dep.Git != "" {
+			parts = append(parts, fmt.Sprintf("git = %q", dep.Git))
+		}
+		if dep.Pkg != "" {
+			parts = append(parts, fmt.Sprintf("pkg = %q", dep.Pkg))
+		}
 		if dep.Version != "" {
 			parts = append(parts, fmt.Sprintf("version = %q", dep.Version))
 		}

@@ -179,9 +179,38 @@ func TestClean(t *testing.T) {
 
 func TestValidateDep(t *testing.T) {
 	if err := validateDep(project.Dependency{Name: "x"}); err == nil {
-		t.Error("expected error for missing git")
+		t.Error("expected error for missing git/pkg")
+	}
+	if err := validateDep(project.Dependency{Name: "x", Git: "g", Pkg: "p"}); err == nil {
+		t.Error("expected error for both git and pkg")
 	}
 	if err := validateDep(project.Dependency{Name: "x", Git: "g", Version: "v1", Branch: "main"}); err == nil {
 		t.Error("expected error for multiple sources")
+	}
+}
+
+func TestInstallFromPurepkgRegistry(t *testing.T) {
+	if !GitInstalled() {
+		t.Skip("git not installed")
+	}
+	repo := makeFakeRepo(t)
+	// Replace the resolver to point pkg deps at our local fake repo.
+	old := Resolver
+	defer func() { Resolver = old }()
+	Resolver = func(d project.Dependency) (project.Dependency, error) {
+		out := d
+		out.Git = repo
+		out.Branch = "main"
+		out.Version = ""
+		return out, nil
+	}
+	p := makeProject(t, map[string]project.Dependency{
+		"math": {Name: "math", Pkg: "math", Version: "0.1.0"},
+	})
+	if err := Install(p); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(p.DepsDir(), "math", "pure.toml")); err != nil {
+		t.Errorf("dep not installed: %v", err)
 	}
 }

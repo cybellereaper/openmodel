@@ -763,8 +763,8 @@ func cmdDeps(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "add":
-		if len(args) != 3 {
-			fmt.Fprintln(stderr, "usage: pr deps add <name> <github-url>")
+		if len(args) < 3 {
+			fmt.Fprintln(stderr, "usage: pr deps add <name> <github-url>\n       pr deps add --pkg <name>[@version]")
 			return 1
 		}
 		cwd, _ := os.Getwd()
@@ -772,6 +772,21 @@ func cmdDeps(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
+		}
+		if args[1] == "--pkg" {
+			spec := args[2]
+			pkgName := spec
+			version := ""
+			if at := strings.Index(spec, "@"); at >= 0 {
+				pkgName = spec[:at]
+				version = spec[at+1:]
+			}
+			if err := deps.AddRegistry(root, pkgName, pkgName, version); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			fmt.Fprintf(stdout, "added registry dependency %s\n", pkgName)
+			return 0
 		}
 		if err := deps.Add(root, args[1], args[2]); err != nil {
 			fmt.Fprintln(stderr, err)

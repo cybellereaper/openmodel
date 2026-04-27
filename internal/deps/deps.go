@@ -7,7 +7,40 @@ import (
 	"sort"
 
 	"purelang/internal/project"
+	"purelang/internal/purepkg"
 )
+
+// Resolver resolves registry-backed dependencies to concrete git refs.
+// Defaults to a real purepkg client; tests can replace it.
+var Resolver = func(dep project.Dependency) (project.Dependency, error) {
+	c := purepkg.NewClient()
+	v := dep.Version
+	if v == "" {
+		// pick latest
+		all, err := c.Versions(dep.Pkg)
+		if err != nil {
+			return dep, err
+		}
+		if len(all) == 0 {
+			return dep, fmt.Errorf("purepkg: no versions for %q", dep.Pkg)
+		}
+		v = all[0].Version
+	}
+	pv, err := c.Resolve(dep.Pkg, v)
+	if err != nil {
+		return dep, err
+	}
+	out := dep
+	out.Git = pv.GitURL
+	if pv.Tag != "" {
+		out.Version = pv.Tag
+	} else if pv.Commit != "" {
+		out.Commit = pv.Commit
+		out.Version = ""
+		out.Branch = ""
+	}
+	return out, nil
+}
 
 // Install reads project dependencies and downloads any missing ones,
 // then writes pure.lock with resolved commit info.
@@ -33,6 +66,13 @@ func Install(p *project.Project) error {
 		dep := p.Dependencies[name]
 		if err := validateDep(dep); err != nil {
 			return err
+		}
+		if dep.Pkg != "" {
+			resolved, err := Resolver(dep)
+			if err != nil {
+				return fmt.Errorf("purepkg: %s: %w", name, err)
+			}
+			dep = resolved
 		}
 		dep = applyDefaults(dep)
 		dest := filepath.Join(p.DepsDir(), name)
@@ -94,6 +134,37 @@ func Add(projectRoot string, name string, gitURL string) error {
 	return Install(p)
 }
 
+// AddRegistry adds a registry-backed dependency to pure.toml and runs install.
+// The name is the local module name; pkgName is the registry package name.
+// version may be empty to track the latest published version.
+func AddRegistry(projectRoot string, name, pkgName, version string) error {
+	tomlPath := filepath.Join(projectRoot, "pure.toml")
+	raw, err := os.ReadFile(tomlPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", tomlPath, err)
+	}
+	data, err := project.ParseTOML(string(raw))
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", tomlPath, err)
+	}
+	if data.Dependencies == nil {
+		data.Dependencies = map[string]project.Dependency{}
+	}
+	dep := project.Dependency{Name: name, Pkg: pkgName}
+	if version != "" {
+		dep.Version = version
+	}
+	data.Dependencies[name] = dep
+	if err := os.WriteFile(tomlPath, []byte(project.EncodeTOML(data)), 0o644); err != nil {
+		return err
+	}
+	p, err := project.LoadProject(projectRoot)
+	if err != nil {
+		return err
+	}
+	return Install(p)
+}
+
 // Update refreshes branch-tracking dependencies; pinned ones (version/commit) stay.
 func Update(p *project.Project) error {
 	if len(p.Dependencies) == 0 {
@@ -109,7 +180,15 @@ func Update(p *project.Project) error {
 	sort.Strings(names)
 	var locks []LockedDependency
 	for _, name := range names {
-		dep := applyDefaults(p.Dependencies[name])
+		dep := p.Dependencies[name]
+		if dep.Pkg != "" {
+			resolved, err := Resolver(dep)
+			if err != nil {
+				return fmt.Errorf("purepkg: %s: %w", name, err)
+			}
+			dep = resolved
+		}
+		dep = applyDefaults(dep)
 		dest := filepath.Join(p.DepsDir(), name)
 		if _, err := os.Stat(dest); err != nil {
 			if !os.IsNotExist(err) {
@@ -164,8 +243,11 @@ func applyDefaults(d project.Dependency) project.Dependency {
 }
 
 func validateDep(d project.Dependency) error {
-	if d.Git == "" {
-		return fmt.Errorf("dependency %q is missing required 'git' field", d.Name)
+	if d.Git == "" && d.Pkg == "" {
+		return fmt.Errorf("dependency %q is missing required 'git' or 'pkg' field", d.Name)
+	}
+	if d.Git != "" && d.Pkg != "" {
+		return fmt.Errorf("dependency %q has both 'git' and 'pkg'; use only one", d.Name)
 	}
 	count := 0
 	if d.Version != "" {
