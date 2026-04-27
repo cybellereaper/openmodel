@@ -13,6 +13,7 @@ import (
 	"purelang/internal/deps"
 	"purelang/internal/fmtter"
 	"purelang/internal/modules"
+	"purelang/internal/native"
 	"purelang/internal/parser"
 	"purelang/internal/project"
 	"purelang/internal/runtime"
@@ -507,6 +508,63 @@ func checkProject(root string, stdout, stderr io.Writer) int {
 }
 
 func cmdBuild(args []string, stdout, stderr io.Writer) int {
+	nativeMode := false
+	outBin := ""
+	var srcFile string
+	for len(args) > 0 {
+		switch args[0] {
+		case "--native":
+			nativeMode = true
+			args = args[1:]
+		case "-o":
+			if len(args) < 2 {
+				fmt.Fprintln(stderr, "-o requires a path")
+				return 1
+			}
+			outBin = args[1]
+			args = args[2:]
+		default:
+			if srcFile != "" {
+				fmt.Fprintf(stderr, "unexpected argument %q\n", args[0])
+				return 1
+			}
+			srcFile = args[0]
+			args = args[1:]
+		}
+	}
+	if nativeMode {
+		if srcFile == "" {
+			fmt.Fprintln(stderr, "pr build --native <file.pure> [-o out]")
+			return 1
+		}
+		if outBin == "" {
+			outBin = strings.TrimSuffix(filepath.Base(srcFile), ".pure")
+			if outBin == "" {
+				outBin = "purelang_app"
+			}
+		}
+		absOut, err := filepath.Abs(outBin)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		data, err := os.ReadFile(srcFile)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		prog, err := parser.Parse(string(data))
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", srcFile, err)
+			return 1
+		}
+		if err := native.Build(string(data), prog, absOut); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "built native binary %s\n", absOut)
+		return 0
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintln(stderr, err)
