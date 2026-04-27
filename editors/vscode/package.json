@@ -1,0 +1,50 @@
+{
+  "name": "purelang",
+  "displayName": "PureLang",
+  "description": "Syntax highlighting and language server integration for PureLang.",
+  "version": "0.1.0",
+  "publisher": "purelang",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:purelang"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "purelang",
+        "aliases": [
+          "PureLang",
+          "pure"
+        ],
+        "extensions": [
+          ".pure"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "purelang",
+        "scopeName": "source.pure",
+        "path": "./syntaxes/pure.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "PureLang",
+      "properties": {
+        "purelang.serverPath": {
+          "type": "string",
+          "default": "pr",
+          "description": "Path to the PureLang `pr` binary used as the language server."
+        }
+      }
+    }
+  }
+}
