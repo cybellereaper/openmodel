@@ -143,6 +143,16 @@ func runFile(path string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	interp := runtime.NewWithWriter(stdout)
+	// Single-file mode: load any std imports the file requested.
+	for _, stmt := range prog.Stmts {
+		if u, ok := stmt.(*ast.UseDecl); ok && std.IsStdPath(u.Path) {
+			if !std.IsStdModule(u.Path) {
+				fmt.Fprintf(stderr, "%s: unknown std module %q\n", path, strings.Join(u.Path, "."))
+				return 1
+			}
+			interp.LoadStdModuleInto(u.Path[1], interp.Globals())
+		}
+	}
 	if err := interp.Run(prog); err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", path, err)
 		return 1
@@ -179,7 +189,13 @@ func runProject(root string, stdout, stderr io.Writer) int {
 	for _, mod := range graph.Modules {
 		dst := interp.ModuleScope(mod.Name)
 		for _, imp := range mod.Imports {
-			if std.IsStdModule(strings.Split(imp, ".")) {
+			parts := strings.Split(imp, ".")
+			if std.IsStdPath(parts) {
+				if !std.IsStdModule(parts) {
+					fmt.Fprintf(stderr, "error: %s: unknown std module %q\n", mod.Path, imp)
+					return 1
+				}
+				interp.LoadStdModuleInto(parts[1], dst)
 				continue
 			}
 			src, ok := graph.Modules[imp]

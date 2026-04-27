@@ -1,14 +1,19 @@
 // Package std hosts metadata about the PureLang standard library.
 //
-// For MVP, the standard library is implemented as built-in functions registered
-// directly in the interpreter (see internal/runtime). This package exists so
-// the standard-library namespace has a clear home, and is used by the compiler
-// to validate `use std.<module>` imports.
+// The standard library is implemented as built-in functions registered on
+// demand by the interpreter when a module imports the corresponding
+// `std.<module>` namespace. This file lists which std modules exist and
+// provides query helpers for the import resolver.
 package std
 
 // Modules is the list of supported `use std.<module>` namespaces.
 var Modules = map[string]bool{
-	"io": true,
+	"io":     true,
+	"list":   true,
+	"string": true,
+	"math":   true,
+	"os":     true,
+	"fs":     true,
 }
 
 // IsStdModule reports whether the given dotted path is a known std module.
@@ -17,4 +22,10 @@ func IsStdModule(path []string) bool {
 		return false
 	}
 	return Modules[path[1]]
+}
+
+// IsStdPath reports whether the given dotted name is a std.* path.
+// Used to decide whether a module name should be looked up in std.
+func IsStdPath(parts []string) bool {
+	return len(parts) >= 1 && parts[0] == "std"
 }
