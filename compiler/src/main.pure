@@ -1,0 +1,7 @@
+use std.io
+use purelangc.lexer
+
+print "purelangc bootstrap"
+print "----------------------------------------"
+print "this project is the seed of the self-hosted PureLang compiler"
+print "see compiler/src/lexer.pure for the lexer scaffolding"

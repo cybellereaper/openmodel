@@ -1,0 +1,75 @@
+// Self-hosted PureLang lexer (bootstrap subset).
+//
+// This file is intentionally written in the subset of PureLang that the
+// existing Go-based reference implementation already supports, so it can
+// be exercised with `pr run compiler/src/lexer.pure` (or via
+// `pr selfhost lex <file.pure>`).
+//
+// As the language grows more features (closures, mutable state inside
+// functions, structs with methods), this lexer will be the seed of the
+// fully self-hosted compiler.
+
+use std.io
+use std.string
+use std.list
+
+Token(kind: String, value: String, line: Int, column: Int) {
+    show => "<$kind '$value' at $line:$column>"
+}
+
+is_letter(ch: String) => contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_", ch)
+is_digit(ch: String) => contains("0123456789", ch)
+is_ident_part(ch: String) => is_letter(ch) || is_digit(ch)
+
+keyword_kind(word: String) => when word {
+    "use" => "USE"
+    "pub" => "PUB"
+    "var" => "VAR"
+    "if" => "IF"
+    "else" => "ELSE"
+    "for" => "FOR"
+    "in" => "IN"
+    "when" => "WHEN"
+    "return" => "RETURN"
+    "object" => "OBJECT"
+    "extend" => "EXTEND"
+    "shape" => "SHAPE"
+    "async" => "ASYNC"
+    "await" => "AWAIT"
+    "try" => "TRY"
+    "throw" => "THROW"
+    "true" => "TRUE"
+    "false" => "FALSE"
+    "null" => "NULL"
+    else => "IDENT"
+}
+
+// Demo: print a brief summary of token kinds detected in a sample line.
+//
+// In the bootstrap subset we don't yet have closures or string slicing,
+// but we can still demonstrate that the language is expressive enough
+// to drive its own scanning rules.
+classify(ch: String) => when {
+    is_letter(ch) => "letter"
+    is_digit(ch) => "digit"
+    ch == " " || ch == "\t" => "space"
+    ch == "\n" => "newline"
+    ch == "\"" => "quote"
+    ch == "(" || ch == ")" => "paren"
+    ch == "{" || ch == "}" => "brace"
+    ch == "[" || ch == "]" => "bracket"
+    else => "symbol"
+}
+
+print "lexer bootstrap ready"
+
+sample = ["u", "s", "e", " ", "s", "t", "d", ".", "i", "o"]
+for c in sample {
+    print c + " -> " + classify(c)
+}
+
+print keyword_kind("use")
+print keyword_kind("foo")
+
+t = Token("IDENT", "name", 3, 5)
+print t.show

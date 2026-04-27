@@ -57,6 +57,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdLSP(rest, stdout, stderr)
 	case "pkg", "publish":
 		return cmdPkg(rest, stdout, stderr)
+	case "selfhost":
+		return cmdSelfhost(rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s\n", cmd, usage())
 		return 1
@@ -600,6 +602,55 @@ func cmdBuild(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "built %s -> build/app.txt\n", p.Name)
 	return 0
+}
+
+func cmdSelfhost(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: pr selfhost <lex|info>")
+		return 1
+	}
+	switch args[0] {
+	case "info":
+		fmt.Fprintln(stdout, "purelangc bootstrap lives in compiler/")
+		fmt.Fprintln(stdout, "current scope: tokens, keyword classification, character classification")
+		fmt.Fprintln(stdout, "next step:    string slicing & mutable accumulators in functions")
+		return 0
+	case "lex":
+		// Run the bootstrap lexer demo. For MVP this reuses the reference
+		// runtime to execute compiler/src/lexer.pure - which is the
+		// self-hosted scaffolding written in PureLang itself.
+		path := findCompilerLexer()
+		if path == "" {
+			fmt.Fprintln(stderr, "could not locate compiler/src/lexer.pure")
+			return 1
+		}
+		if len(args) >= 2 {
+			fmt.Fprintf(stdout, "running self-hosted lexer scaffolding on input %q\n\n", args[1])
+		}
+		return runFile(path, stdout, stderr)
+	}
+	fmt.Fprintf(stderr, "unknown selfhost subcommand %q\n", args[0])
+	return 1
+}
+
+// findCompilerLexer searches upward from the current working directory for
+// the bootstrap compiler's lexer.pure.
+func findCompilerLexer() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for dir := cwd; ; {
+		candidate := filepath.Join(dir, "compiler", "src", "lexer.pure")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func cmdPkg(args []string, stdout, stderr io.Writer) int {

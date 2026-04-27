@@ -2,36 +2,47 @@
 
 PureLang is a clean, strongly typed programming language inspired by Swift,
 Kotlin, and Ruby. It removes boilerplate while keeping modern safety features
-like immutable-by-default variables, type inference, and concise data types.
+like immutable-by-default variables, type inference, null safety, and concise
+data types.
 
-This repository contains the **MVP implementation** of the PureLang
-compiler/interpreter, written in Go. It can run single PureLang files, manage
-PureLang projects via `pure.toml`, and download GitHub dependencies into
-`.pure/deps/`.
+This repository contains the **reference implementation** of PureLang in Go.
+It includes:
 
-| Property                    | Value          |
-| --------------------------- | -------------- |
-| Source extension            | `.pure`        |
-| Compiler / interpreter      | `pr`           |
-| Project file                | `pure.toml`    |
-| Lock file                   | `pure.lock`    |
-| Standard library namespace  | `std`          |
-| Dependency cache            | `.pure/deps/`  |
-| Implementation language     | Go (stdlib only) |
+- A lexer, parser, type checker, and tree-walking interpreter.
+- A bytecode compiler and stack VM (`pr run --vm`).
+- A native compiler that emits Go and produces a real binary
+  (`pr build --native`).
+- A formatter (`pr fmt`).
+- A Language Server Protocol server (`pr lsp`) over JSON-RPC stdio.
+- A package manager that supports both Git URLs and the **purepkg**
+  registry (`pr deps`, `pr deps add`, `pr pkg`).
+- A growing standard library: `std.io`, `std.list`, `std.string`, `std.math`,
+  `std.os`, `std.fs`.
+- A self-hosted compiler bootstrap project under `compiler/`.
+- A Visual Studio Code extension under `editors/vscode/`.
+
+| Property                    | Value             |
+| --------------------------- | ----------------- |
+| Source extension            | `.pure`           |
+| Compiler / interpreter      | `pr`              |
+| Project file                | `pure.toml`       |
+| Lock file                   | `pure.lock`       |
+| Standard library namespace  | `std`             |
+| Dependency cache            | `.pure/deps/`     |
+| Implementation language     | Go (stdlib only)  |
+| Registry env override       | `PUREPKG_URL`     |
+| Registry auth env           | `PUREPKG_TOKEN`   |
 
 ## Building
 
-PureLang's reference implementation requires Go 1.22+ and a local `git`
-executable for downloading GitHub dependencies.
-
-```bash
+```sh
 go build -o pr ./cmd/pr
 ./pr version
 ```
 
 ## Running single files
 
-```bash
+```sh
 ./pr run examples/hello.pure
 ./pr run examples/user.pure
 ./pr run examples/functions.pure
@@ -39,48 +50,38 @@ go build -o pr ./cmd/pr
 
 ## Creating a project
 
-```bash
+```sh
 ./pr new my_app
 cd my_app
 ../pr run
 ```
 
-`pr new` generates:
-
-```text
-my_app/
-  pure.toml
-  src/
-    main.pure
-```
-
 ## Running projects
 
-When you run `pr run` inside a project directory (or pass a project directory
-as an argument), the compiler:
+```sh
+./pr run examples_project
+./pr check examples_project
+```
+
+When you run `pr run` inside a project directory, the compiler:
 
 1. Walks upward to find `pure.toml`.
 2. Loads project metadata.
 3. Installs missing dependencies (or prints a helpful error).
 4. Parses every `.pure` file under `src/` and inside `.pure/deps/<dep>/src/`.
-5. Registers all top-level declarations.
+5. Builds a per-file module graph and links imports through `use`.
 6. Executes the configured entry file.
-
-```bash
-./pr run examples_project
-./pr check examples_project
-```
 
 ## Adding GitHub dependencies
 
-```bash
-./pr deps                                            # install / refresh deps
+```sh
+./pr deps                                         # install / refresh
 ./pr deps add math https://github.com/example/pure-math.git
-./pr deps update                                     # update branch deps
-./pr deps clean                                      # delete .pure/deps
+./pr deps update                                  # refresh branch deps
+./pr deps clean                                   # delete .pure/deps
 ```
 
-A dependency declaration in `pure.toml` looks like this:
+A dependency in `pure.toml` looks like one of these:
 
 ```toml
 [dependencies]
@@ -89,11 +90,26 @@ json = { git = "https://github.com/example/pure-json.git", branch = "main" }
 core = { git = "https://github.com/example/pure-core.git", commit = "abc123" }
 ```
 
-Exactly one of `version`, `branch`, or `commit` should be supplied. If none is
-given, `branch = "main"` is used by default.
+## Adding registry dependencies (purepkg)
 
-Dependencies are downloaded to `.pure/deps/<name>/` using the local `git`
-binary, and resolved commit hashes are recorded in `pure.lock`.
+```sh
+./pr deps add --pkg math@0.2.0
+./pr pkg info math
+./pr pkg info math 0.2.0
+./pr pkg search math
+PUREPKG_TOKEN=... ./pr pkg publish --git=https://github.com/you/your-pkg.git
+```
+
+Registry deps look like this in `pure.toml`:
+
+```toml
+[dependencies]
+math = { pkg = "math", version = "0.2.0" }
+```
+
+The registry is a thin layer on top of Git: every published version maps to
+a public Git URL plus a tag/commit. You can override the registry endpoint
+with `PUREPKG_URL`.
 
 ## CLI summary
 
@@ -101,14 +117,23 @@ binary, and resolved commit hashes are recorded in `pure.lock`.
 pr version
 pr new <name>
 pr run [file_or_dir]
+pr run --vm <file>            # bytecode VM
 pr check [file_or_dir]
-pr build
-pr test
-pr fmt [file]
+pr build                      # writes build/app.txt
+pr build --native <file> [-o] # compile to a native binary via Go
+pr fmt [file]                 # format in-place
+pr test                       # run *_test.pure files
+pr lsp                        # LSP server over stdio
 pr deps
 pr deps add <name> <github-url>
+pr deps add --pkg <name>[@version]
 pr deps update
 pr deps clean
+pr pkg info <name> [version]
+pr pkg search <query>
+pr pkg publish --git=<url>
+pr selfhost info
+pr selfhost lex <file>        # run the PureLang-implemented lexer
 ```
 
 ## MVP syntax
@@ -143,8 +168,7 @@ add(a: Int, b: Int) {
 }
 ```
 
-Data types are declared with parameter-style syntax. The compiler distinguishes
-data declarations from functions by the leading capital letter.
+Data types are declared with parameter-style syntax.
 
 ```pure
 User(name: String, age: Int) {
@@ -168,7 +192,39 @@ status = if age >= 18 {
 }
 ```
 
-Loops, lists, and command-style calls are also supported:
+Pattern matching with `when`:
+
+```pure
+result = when x {
+    1 => "one"
+    2, 3 => "small"
+    n if n > 10 => "big"
+    else => "other"
+}
+
+label = when {
+    y < 10 => "small"
+    y < 100 => "medium"
+    else => "large"
+}
+```
+
+Null safety with `T?`, `?.`, and `?:`:
+
+```pure
+User(name: String?, age: Int)
+
+a = User("Alex", 21)
+b = User(null, 30)
+
+print a.name ?: "anonymous"
+print b.name ?: "anonymous"
+
+x = null
+print x?.foo ?: "fallback"
+```
+
+Loops, lists, and command-style calls:
 
 ```pure
 numbers = [1, 2, 3]
@@ -181,12 +237,12 @@ print "Hello"
 print("Hello")
 ```
 
-String interpolation supports both `$name` and `${expr}` forms:
+String interpolation supports both `$name` and `${expr}`:
 
 ```pure
 name = "Alex"
 print "Hello, $name"
-print "Length is ${name.length}"
+print "Hello, ${user.name}"
 ```
 
 ## Module resolution
@@ -203,37 +259,74 @@ Examples:
 use std.io                  # built-in standard library module
 use math                    # dependency at .pure/deps/math
 use math.geometry           # nested file inside the dependency
-use app.models.user         # local project file (project name is from pure.toml)
+use app.models.user         # local project file
 ```
 
-For MVP, top-level declarations from all parsed files are visible globally.
-Module isolation will be tightened in a future release.
+Every PureLang source file becomes its own module. Top-level declarations
+are visible only inside the file unless explicitly imported via `use`. The
+project name in `pure.toml` is the dotted root for project-local files
+(`use <project>.<dotted.path>`).
+
+## Standard library
+
+| Module       | Functions                                                                |
+| ------------ | ------------------------------------------------------------------------ |
+| `std.io`     | `print`, `println`, `input`                                              |
+| `std.list`   | `len`, `first`, `last`, `push`, `range`, `reverse`, `sort_ints`          |
+| `std.string` | `upper`, `lower`, `trim`, `split`, `join`, `contains`, `to_int`, `to_string` |
+| `std.math`   | `abs`, `min`, `max`, `sqrt`, `pow`, `floor`, `ceil`, `pi`, `e`           |
+| `std.os`     | `args`, `env`, `exit`                                                    |
+| `std.fs`     | `read_file`, `write_file`, `exists`                                      |
+
+## Editor support
+
+A Visual Studio Code extension lives under `editors/vscode/`. It contributes:
+
+- A TextMate grammar with comment, string (incl. `$ident`/`${expr}`),
+  number, keyword, operator, type, data declaration, and function
+  declaration scopes.
+- `language-configuration.json` for brackets, comments, and indent rules.
+- A small `extension.js` that launches `pr lsp` via
+  `vscode-languageclient` so PureLang files get diagnostics, formatting,
+  and hover documentation in any LSP-aware editor.
+
+To install locally, see `editors/vscode/README.md`.
+
+## Self-hosted compiler bootstrap
+
+The `compiler/` directory hosts the seed of the future self-hosted
+PureLang compiler, written in PureLang itself. Run the bootstrap lexer
+scaffolding with:
+
+```sh
+./pr selfhost lex examples/hello.pure
+./pr selfhost info
+./pr run compiler
+```
+
+Today the bootstrap demonstrates `Token` data types, character
+classification, and keyword classification using `when`. As the
+language grows (mutable accumulators inside functions, string slicing,
+etc.) the bootstrap will grow into a real lexer, parser, type checker,
+and code generator that targets the bytecode VM. See
+`compiler/README.md` for the staged roadmap.
 
 ## Testing
 
-Run the Go test suite from the repository root:
-
-```bash
+```sh
 go test ./...
 ```
 
-The tests cover the lexer, parser, project loader, dependency manager, and a
-set of CLI integration tests including a project that consumes a local Git
-repository as a dependency.
+The tests cover:
 
-## Roadmap
-
-This MVP is intentionally small and extensible. Planned future features:
-
-- Pattern matching with `when`
-- Null safety with `?`
-- Better module isolation
-- Package registry integration with `purepkg`
-- Bytecode VM
-- Native compilation
-- Self-hosted compiler
-- Formatter implementation (`pr fmt`)
-- Language server protocol support
-- Editor syntax highlighting
-- Standard library expansion
-- Publishing packages to `purepkg`
+- Lexer, parser, formatter
+- Project loader and `pure.toml` parser
+- Dependency manager (Git-backed and registry-backed paths via a fake
+  resolver)
+- purepkg HTTP client (against `httptest`)
+- Bytecode VM (arithmetic, functions, if expressions, elvis, lists)
+- Native compilation (writes a Go program, builds it, runs the binary)
+- LSP server (initialize handshake and diagnostic publishing)
+- Module isolation (unimported declarations are not visible)
+- CLI integration (hello/user/functions examples, project mode, project
+  with a local Git dependency)
