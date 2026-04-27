@@ -12,6 +12,7 @@ import (
 	"purelang/internal/checker"
 	"purelang/internal/deps"
 	"purelang/internal/fmtter"
+	"purelang/internal/lsp"
 	"purelang/internal/modules"
 	"purelang/internal/native"
 	"purelang/internal/parser"
@@ -52,6 +53,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdTest(rest, stdout, stderr)
 	case "deps":
 		return cmdDeps(rest, stdout, stderr)
+	case "lsp":
+		return cmdLSP(rest, stdout, stderr)
+	case "pkg", "publish":
+		return cmdPkg(rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s\n", cmd, usage())
 		return 1
@@ -594,6 +599,21 @@ func cmdBuild(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "built %s -> build/app.txt\n", p.Name)
+	return 0
+}
+
+func cmdPkg(args []string, stdout, stderr io.Writer) int {
+	// Forward to the package-registry CLI handler, which lives in pkg.go
+	// to keep the imports/dependencies isolated.
+	return runPkg(args, stdout, stderr)
+}
+
+func cmdLSP(args []string, stdout, stderr io.Writer) int {
+	srv := lsp.NewServer(os.Stdin, stdout, stderr)
+	if err := srv.Serve(); err != nil {
+		fmt.Fprintf(stderr, "lsp: %v\n", err)
+		return 1
+	}
 	return 0
 }
 
