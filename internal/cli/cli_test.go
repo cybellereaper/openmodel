@@ -126,6 +126,47 @@ func TestCheckSingleFile(t *testing.T) {
 	}
 }
 
+func TestModuleIsolation(t *testing.T) {
+	tmp := t.TempDir()
+	app := filepath.Join(tmp, "iso")
+	if err := os.MkdirAll(filepath.Join(app, "src", "models"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(app, "pure.toml"), []byte(`name = "iso"
+version = "0.1.0"
+entry = "src/main.pure"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(app, "src", "models", "user.pure"), []byte("User(name: String)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// main.pure does NOT import the module; should fail.
+	if err := os.WriteFile(filepath.Join(app, "src", "main.pure"), []byte(`use std.io
+print User("x").name
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rc, _, _ := runCLI(t, "run", app)
+	if rc == 0 {
+		t.Errorf("expected failure when User is not imported")
+	}
+	// Now import it.
+	if err := os.WriteFile(filepath.Join(app, "src", "main.pure"), []byte(`use std.io
+use iso.models.user
+print User("Bob").name
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rc, out, errStr := runCLI(t, "run", app)
+	if rc != 0 {
+		t.Fatalf("expected success, rc=%d err=%s", rc, errStr)
+	}
+	if strings.TrimSpace(out) != "Bob" {
+		t.Errorf("got %q", out)
+	}
+}
+
 func TestProjectWithLocalDependency(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git missing")

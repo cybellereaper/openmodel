@@ -144,6 +144,11 @@ func (p *Parser) parseStatement() (ast.Stmt, error) {
 	switch t.Type {
 	case token.USE:
 		return p.parseUse()
+	case token.PUB:
+		// `pub` is a no-op exporter modifier in MVP: all top-level decls are
+		// exported. Skip the keyword and continue parsing the next statement.
+		p.advance()
+		return p.parseStatement()
 	case token.VAR:
 		return p.parseVarDecl()
 	case token.RETURN:

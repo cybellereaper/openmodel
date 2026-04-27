@@ -10,9 +10,11 @@ import (
 	"purelang/internal/ast"
 	"purelang/internal/checker"
 	"purelang/internal/deps"
+	"purelang/internal/modules"
 	"purelang/internal/parser"
 	"purelang/internal/project"
 	"purelang/internal/runtime"
+	"purelang/internal/std"
 )
 
 const Version = "0.1.0"
@@ -158,27 +160,118 @@ func runProject(root string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	progs, entry, err := loadProjectPrograms(p)
+	graph, entryName, err := buildModuleGraph(p)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	interp := runtime.NewWithWriter(stdout)
-	for _, np := range progs {
-		if err := interp.RegisterDeclarations(np.prog); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-	}
-	if entry == nil {
+	if entryName == "" {
 		fmt.Fprintf(stderr, "error: entry file %s not found\n", p.Entry)
 		return 1
 	}
-	if err := interp.RunSkippingDecls(entry); err != nil {
+	interp := runtime.NewWithWriter(stdout)
+	// Register declarations into per-module scopes.
+	for _, mod := range graph.Modules {
+		scope := interp.ModuleScope(mod.Name)
+		interp.RegisterDeclarationsInto(scope, mod.Program)
+	}
+	// Resolve imports for every module.
+	for _, mod := range graph.Modules {
+		dst := interp.ModuleScope(mod.Name)
+		for _, imp := range mod.Imports {
+			if std.IsStdModule(strings.Split(imp, ".")) {
+				continue
+			}
+			src, ok := graph.Modules[imp]
+			if !ok {
+				fmt.Fprintf(stderr, "error: %s: cannot resolve module %q\n", mod.Path, imp)
+				return 1
+			}
+			interp.ImportInto(dst, interp.ModuleScope(src.Name))
+		}
+	}
+	// Execute the entry module top-level statements.
+	entry := graph.Modules[entryName]
+	if err := interp.RunInScope(interp.ModuleScope(entry.Name), entry.Program); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	return 0
+}
+
+// buildModuleGraph parses every .pure file in the project's src/ and in
+// every dependency under .pure/deps/<name>/src/, then computes module names.
+func buildModuleGraph(p *project.Project) (*modules.Graph, string, error) {
+	g := modules.NewGraph()
+	srcFiles, err := project.ListSourceFiles(p)
+	if err != nil {
+		return nil, "", err
+	}
+	entryAbs, _ := filepath.Abs(p.EntryPath())
+	entryName := ""
+	for _, f := range srcFiles {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return nil, "", err
+		}
+		prog, err := parser.Parse(string(data))
+		if err != nil {
+			return nil, "", fmt.Errorf("%s: %v", f, err)
+		}
+		name, err := modules.FileToModuleName(p.Name, p.SourceDir, f)
+		if err != nil {
+			return nil, "", err
+		}
+		mod := &modules.Module{
+			Name:    name,
+			Path:    f,
+			Program: prog,
+			Imports: modules.CollectImports(prog),
+		}
+		g.Add(mod)
+		if abs, _ := filepath.Abs(f); abs == entryAbs {
+			entryName = name
+		}
+	}
+	// Dependencies
+	if entries, err := os.ReadDir(p.DepsDir()); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			depRoot := filepath.Join(p.DepsDir(), e.Name())
+			depProj, err := project.LoadProject(depRoot)
+			if err != nil {
+				continue
+			}
+			depFiles, err := project.ListSourceFiles(depProj)
+			if err != nil {
+				continue
+			}
+			for _, f := range depFiles {
+				data, err := os.ReadFile(f)
+				if err != nil {
+					return nil, "", err
+				}
+				prog, err := parser.Parse(string(data))
+				if err != nil {
+					return nil, "", fmt.Errorf("%s: %v", f, err)
+				}
+				name, err := modules.FileToModuleName(depProj.Name, depProj.SourceDir, f)
+				if err != nil {
+					return nil, "", err
+				}
+				mod := &modules.Module{
+					Name:    name,
+					Path:    f,
+					Program: prog,
+					Imports: modules.CollectImports(prog),
+				}
+				g.Add(mod)
+			}
+		}
+	}
+	return g, entryName, nil
 }
 
 type namedProgram struct {
@@ -188,6 +281,9 @@ type namedProgram struct {
 
 // loadProjectPrograms parses every .pure file in src/ and in .pure/deps/<dep>/src.
 // Returns all parsed programs and the entry program separately.
+//
+// This is used by the type-checker (which checks all files together) and by
+// commands that need a flat view of all parsed sources.
 func loadProjectPrograms(p *project.Project) ([]namedProgram, *ast.Program, error) {
 	var progs []namedProgram
 	var entry *ast.Program

@@ -12,8 +12,14 @@ import (
 )
 
 type Interpreter struct {
-	globals *Environment
+	globals *Environment // built-in scope (print, println, builtin funcs)
 	out     io.Writer
+
+	// modules holds per-module top-level scopes. The key is the dotted module
+	// name. When a module is run/registered, its top-level declarations live
+	// in the module's own Environment, parented to globals. Imports copy
+	// references between module scopes.
+	modules map[string]*Environment
 }
 
 func New() *Interpreter {
@@ -24,9 +30,72 @@ func NewWithWriter(w io.Writer) *Interpreter {
 	i := &Interpreter{
 		globals: NewEnvironment(nil),
 		out:     w,
+		modules: map[string]*Environment{},
 	}
 	i.installBuiltins()
 	return i
+}
+
+// ModuleScope returns (and lazily creates) the per-module environment for a name.
+// The scope is parented to the global built-in scope.
+func (i *Interpreter) ModuleScope(name string) *Environment {
+	if env, ok := i.modules[name]; ok {
+		return env
+	}
+	env := NewEnvironment(i.globals)
+	i.modules[name] = env
+	return env
+}
+
+// ImportInto copies all defined-here names from src into dst as immutable
+// references. Used when a module's `use other.module` is processed.
+func (i *Interpreter) ImportInto(dst, src *Environment) {
+	for name, val := range src.values {
+		dst.Define(name, val, false)
+	}
+}
+
+// RegisterDeclarationsInto pre-registers top-level declarations of a program
+// in the supplied environment. Use this with a per-module scope.
+func (i *Interpreter) RegisterDeclarationsInto(env *Environment, prog *ast.Program) {
+	for _, stmt := range prog.Stmts {
+		switch n := stmt.(type) {
+		case *ast.FunctionDecl:
+			fn := &FunctionValue{
+				Name:     n.Name,
+				Params:   n.Params,
+				Body:     n.Body,
+				ExprBody: n.ExprBody,
+				Env:      env,
+			}
+			env.Define(n.Name, Value{Kind: VFunction, Func: fn}, false)
+		case *ast.DataDecl:
+			dt := &DataTypeValue{
+				Name:           n.Name,
+				Fields:         n.Fields,
+				ComputedFields: n.ComputedFields,
+			}
+			env.Define(n.Name, Value{Kind: VDataType, DataType: dt}, false)
+		}
+	}
+}
+
+// RunInScope executes a program inside a specific environment, skipping
+// re-registration of declarations (assumes RegisterDeclarationsInto already ran).
+func (i *Interpreter) RunInScope(env *Environment, prog *ast.Program) error {
+	for _, stmt := range prog.Stmts {
+		switch stmt.(type) {
+		case *ast.FunctionDecl, *ast.DataDecl:
+			continue
+		}
+		if _, err := i.execStmt(env, stmt); err != nil {
+			if _, ok := err.(returnSignal); ok {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func (i *Interpreter) Globals() *Environment { return i.globals }
