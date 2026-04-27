@@ -10,6 +10,7 @@ import (
 	"purelang/internal/ast"
 	"purelang/internal/checker"
 	"purelang/internal/deps"
+	"purelang/internal/fmtter"
 	"purelang/internal/modules"
 	"purelang/internal/parser"
 	"purelang/internal/project"
@@ -492,8 +493,81 @@ func cmdBuild(args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdFmt(args []string, stdout, stderr io.Writer) int {
-	fmt.Fprintln(stdout, "formatting is not implemented yet")
+	if len(args) == 0 {
+		// Format all files in the current project.
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		root, err := project.FindProjectRoot(cwd)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		p, err := project.LoadProject(root)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		files, err := project.ListSourceFiles(p)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		changed := 0
+		for _, f := range files {
+			ok, err := formatFile(f)
+			if err != nil {
+				fmt.Fprintf(stderr, "%s: %v\n", f, err)
+				return 1
+			}
+			if ok {
+				fmt.Fprintf(stdout, "formatted %s\n", f)
+				changed++
+			}
+		}
+		if changed == 0 {
+			fmt.Fprintln(stdout, "no changes needed")
+		}
+		return 0
+	}
+	target := args[0]
+	info, err := os.Stat(target)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if info.IsDir() {
+		fmt.Fprintln(stderr, "pr fmt <dir> is not supported; cd into the project first")
+		return 1
+	}
+	ok, err := formatFile(target)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if ok {
+		fmt.Fprintf(stdout, "formatted %s\n", target)
+	} else {
+		fmt.Fprintf(stdout, "%s: already formatted\n", target)
+	}
 	return 0
+}
+
+func formatFile(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	formatted, err := fmtter.Format(string(data))
+	if err != nil {
+		return false, err
+	}
+	if formatted == string(data) {
+		return false, nil
+	}
+	return true, os.WriteFile(path, []byte(formatted), 0o644)
 }
 
 func cmdTest(args []string, stdout, stderr io.Writer) int {
