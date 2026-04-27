@@ -1,0 +1,4 @@
+User(name: String, age: Int) {
+    adult = age >= 18
+    greeting => "Hello, $name"
+}

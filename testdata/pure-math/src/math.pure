@@ -1,0 +1,2 @@
+square(x: Int) => x * x
+cube(x: Int) => x * x * x

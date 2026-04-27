@@ -1,0 +1,4 @@
+use std.io
+use math
+
+print square(4)

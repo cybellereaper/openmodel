@@ -1,0 +1,6 @@
+name = "deps_app"
+version = "0.1.0"
+entry = "src/main.pure"
+
+[dependencies]
+math = { git = "https://github.com/example/pure-math.git", branch = "main" }
