@@ -1,0 +1,10 @@
+use std.io
+
+add(a: Int, b: Int) => a + b
+
+square(x: Int) {
+    x * x
+}
+
+print add(2, 3)
+print square(4)

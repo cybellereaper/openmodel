@@ -1,0 +1,13 @@
+use std.io
+
+User(name: String, age: Int) {
+    adult = age >= 18
+    greeting => "Hello, $name"
+}
+
+user = User("Alex", 21)
+
+print user.name
+print user.age
+print user.adult
+print user.greeting

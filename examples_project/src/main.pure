@@ -1,0 +1,8 @@
+use std.io
+use example_app.models.user
+
+user = User("Alex", 21)
+
+print user.name
+print user.adult
+print user.greeting

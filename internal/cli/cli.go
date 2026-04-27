@@ -1,0 +1,510 @@
+package cli
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"purelang/internal/ast"
+	"purelang/internal/checker"
+	"purelang/internal/deps"
+	"purelang/internal/parser"
+	"purelang/internal/project"
+	"purelang/internal/runtime"
+)
+
+const Version = "0.1.0"
+
+// Run dispatches CLI args. Returns process exit code.
+func Run(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, usage())
+		return 1
+	}
+	cmd := args[0]
+	rest := args[1:]
+	switch cmd {
+	case "version", "--version", "-v":
+		fmt.Fprintf(stdout, "PureLang %s\n", Version)
+		return 0
+	case "help", "--help", "-h":
+		fmt.Fprintln(stdout, usage())
+		return 0
+	case "new":
+		return cmdNew(rest, stdout, stderr)
+	case "run":
+		return cmdRun(rest, stdout, stderr)
+	case "check":
+		return cmdCheck(rest, stdout, stderr)
+	case "build":
+		return cmdBuild(rest, stdout, stderr)
+	case "fmt":
+		return cmdFmt(rest, stdout, stderr)
+	case "test":
+		return cmdTest(rest, stdout, stderr)
+	case "deps":
+		return cmdDeps(rest, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown command %q\n\n%s\n", cmd, usage())
+		return 1
+	}
+}
+
+func usage() string {
+	return strings.TrimSpace(`
+PureLang ` + Version + `
+
+USAGE:
+    pr <command> [arguments]
+
+COMMANDS:
+    version                   Print PureLang version
+    new <name>                Create a new project
+    run [path]                Run a file or project
+    check [path]              Type-check a file or project
+    build                     Build the current project
+    test                      Run *_test.pure files in the current project
+    fmt [path]                Format source files (not implemented)
+    deps                      Install project dependencies
+    deps add <name> <url>     Add a GitHub dependency
+    deps update               Update branch dependencies
+    deps clean                Remove .pure/deps
+`)
+}
+
+func cmdNew(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, "usage: pr new <name>")
+		return 1
+	}
+	name := args[0]
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if err := project.CreateProject(cwd, name); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "created project %s\n", name)
+	return 0
+}
+
+func cmdRun(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		// Run the current project.
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		root, err := project.FindProjectRoot(cwd)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return runProject(root, stdout, stderr)
+	}
+	target := args[0]
+	info, err := os.Stat(target)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if info.IsDir() {
+		root, err := filepath.Abs(target)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if _, err := os.Stat(filepath.Join(root, "pure.toml")); err != nil {
+			fmt.Fprintf(stderr, "error: no pure.toml in %s\n", root)
+			return 1
+		}
+		return runProject(root, stdout, stderr)
+	}
+	return runFile(target, stdout, stderr)
+}
+
+func runFile(path string, stdout, stderr io.Writer) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	prog, err := parser.Parse(string(data))
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", path, err)
+		return 1
+	}
+	interp := runtime.NewWithWriter(stdout)
+	if err := interp.Run(prog); err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", path, err)
+		return 1
+	}
+	return 0
+}
+
+func runProject(root string, stdout, stderr io.Writer) int {
+	p, err := project.LoadProject(root)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if err := ensureDeps(p, stderr); err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	progs, entry, err := loadProjectPrograms(p)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	interp := runtime.NewWithWriter(stdout)
+	for _, np := range progs {
+		if err := interp.RegisterDeclarations(np.prog); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
+	if entry == nil {
+		fmt.Fprintf(stderr, "error: entry file %s not found\n", p.Entry)
+		return 1
+	}
+	if err := interp.RunSkippingDecls(entry); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return 0
+}
+
+type namedProgram struct {
+	path string
+	prog *ast.Program
+}
+
+// loadProjectPrograms parses every .pure file in src/ and in .pure/deps/<dep>/src.
+// Returns all parsed programs and the entry program separately.
+func loadProjectPrograms(p *project.Project) ([]namedProgram, *ast.Program, error) {
+	var progs []namedProgram
+	var entry *ast.Program
+	srcFiles, err := project.ListSourceFiles(p)
+	if err != nil {
+		return nil, nil, err
+	}
+	entryAbs := p.EntryPath()
+	for _, f := range srcFiles {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return nil, nil, err
+		}
+		pg, err := parser.Parse(string(data))
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %v", f, err)
+		}
+		progs = append(progs, namedProgram{path: f, prog: pg})
+		fa, _ := filepath.Abs(f)
+		ea, _ := filepath.Abs(entryAbs)
+		if fa == ea {
+			entry = pg
+		}
+	}
+	// dependencies
+	depDir := p.DepsDir()
+	if entries, err := os.ReadDir(depDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			depRoot := filepath.Join(depDir, e.Name())
+			depProj, err := project.LoadProject(depRoot)
+			if err != nil {
+				continue
+			}
+			depFiles, err := project.ListSourceFiles(depProj)
+			if err != nil {
+				continue
+			}
+			for _, f := range depFiles {
+				data, err := os.ReadFile(f)
+				if err != nil {
+					return nil, nil, err
+				}
+				pg, err := parser.Parse(string(data))
+				if err != nil {
+					return nil, nil, fmt.Errorf("%s: %v", f, err)
+				}
+				progs = append(progs, namedProgram{path: f, prog: pg})
+			}
+		}
+	}
+	return progs, entry, nil
+}
+
+func ensureDeps(p *project.Project, stderr io.Writer) error {
+	if len(p.Dependencies) == 0 {
+		return nil
+	}
+	missing := false
+	for name := range p.Dependencies {
+		if _, err := os.Stat(filepath.Join(p.DepsDir(), name)); err != nil {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return nil
+	}
+	if !deps.GitInstalled() {
+		return fmt.Errorf("missing dependencies and %v", deps.ErrGitMissing)
+	}
+	fmt.Fprintln(stderr, "installing dependencies...")
+	return deps.Install(p)
+}
+
+func cmdCheck(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		root, err := project.FindProjectRoot(cwd)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return checkProject(root, stdout, stderr)
+	}
+	target := args[0]
+	info, err := os.Stat(target)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if info.IsDir() {
+		root, err := filepath.Abs(target)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return checkProject(root, stdout, stderr)
+	}
+	return checkFile(target, stdout, stderr)
+}
+
+func checkFile(path string, stdout, stderr io.Writer) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	prog, err := parser.Parse(string(data))
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", path, err)
+		return 1
+	}
+	c := checker.New()
+	errs := c.Check(prog)
+	if len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintf(stderr, "%s: %s\n", path, e)
+		}
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s: ok\n", path)
+	return 0
+}
+
+func checkProject(root string, stdout, stderr io.Writer) int {
+	p, err := project.LoadProject(root)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	progs, _, err := loadProjectPrograms(p)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	c := checker.New()
+	asts := make([]*ast.Program, 0, len(progs))
+	for _, np := range progs {
+		asts = append(asts, np.prog)
+	}
+	errs := c.Check(asts...)
+	if len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintf(stderr, "error: %s\n", e)
+		}
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s: ok\n", p.Name)
+	return 0
+}
+
+func cmdBuild(args []string, stdout, stderr io.Writer) int {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	root, err := project.FindProjectRoot(cwd)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	p, err := project.LoadProject(root)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if rc := checkProject(root, stdout, stderr); rc != 0 {
+		return rc
+	}
+	buildDir := filepath.Join(root, "build")
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	content := fmt.Sprintf("PureLang build artifact for %s\nentry = %s\n", p.Name, p.Entry)
+	if err := os.WriteFile(filepath.Join(buildDir, "app.txt"), []byte(content), 0o644); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "built %s -> build/app.txt\n", p.Name)
+	return 0
+}
+
+func cmdFmt(args []string, stdout, stderr io.Writer) int {
+	fmt.Fprintln(stdout, "formatting is not implemented yet")
+	return 0
+}
+
+func cmdTest(args []string, stdout, stderr io.Writer) int {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	root, err := project.FindProjectRoot(cwd)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	p, err := project.LoadProject(root)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	files, err := project.ListSourceFiles(p)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "running tests...")
+	for _, f := range files {
+		if !strings.HasSuffix(f, "_test.pure") {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		prog, err := parser.Parse(string(data))
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", f, err)
+			return 1
+		}
+		interp := runtime.NewWithWriter(stdout)
+		if err := interp.Run(prog); err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", f, err)
+			return 1
+		}
+	}
+	fmt.Fprintln(stdout, "ok")
+	return 0
+}
+
+func cmdDeps(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		cwd, _ := os.Getwd()
+		root, err := project.FindProjectRoot(cwd)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		p, err := project.LoadProject(root)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := deps.Install(p); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintln(stdout, "dependencies installed")
+		return 0
+	}
+	switch args[0] {
+	case "add":
+		if len(args) != 3 {
+			fmt.Fprintln(stderr, "usage: pr deps add <name> <github-url>")
+			return 1
+		}
+		cwd, _ := os.Getwd()
+		root, err := project.FindProjectRoot(cwd)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := deps.Add(root, args[1], args[2]); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "added dependency %s\n", args[1])
+		return 0
+	case "update":
+		cwd, _ := os.Getwd()
+		root, err := project.FindProjectRoot(cwd)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		p, err := project.LoadProject(root)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := deps.Update(p); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintln(stdout, "dependencies updated")
+		return 0
+	case "clean":
+		cwd, _ := os.Getwd()
+		root, err := project.FindProjectRoot(cwd)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		p, err := project.LoadProject(root)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := deps.Clean(p); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintln(stdout, "removed .pure/deps")
+		return 0
+	}
+	fmt.Fprintf(stderr, "unknown deps subcommand %q\n", args[0])
+	return 1
+}
