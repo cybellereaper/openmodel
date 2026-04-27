@@ -278,6 +278,9 @@ func (l *Lexer) scanSymbol(line, col int) {
 		if l.peek() == ':' {
 			l.advance()
 			l.addAt(token.ELVIS, "?:", line, col)
+		} else if l.peek() == '.' {
+			l.advance()
+			l.addAt(token.QDOT, "?.", line, col)
 		} else {
 			l.addAt(token.QUESTION, "?", line, col)
 		}

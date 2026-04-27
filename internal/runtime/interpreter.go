@@ -209,6 +209,8 @@ func (i *Interpreter) execStmt(env *Environment, stmt ast.Stmt) (Value, error) {
 		return Null(), nil
 	case *ast.IfExpr:
 		return i.evalIf(env, n)
+	case *ast.WhenExpr:
+		return i.evalWhen(env, n)
 	case *ast.BlockStmt:
 		return i.evalBlock(env, n)
 	}
@@ -329,13 +331,92 @@ func (i *Interpreter) evalExpr(env *Environment, expr ast.Expr) (Value, error) {
 		return target.List[i64], nil
 	case *ast.IfExpr:
 		return i.evalIf(env, n)
+	case *ast.WhenExpr:
+		return i.evalWhen(env, n)
 	case *ast.BlockStmt:
 		return i.evalBlock(NewEnvironment(env), n)
 	}
 	return Null(), fmt.Errorf("cannot evaluate %T", expr)
 }
 
+func (i *Interpreter) evalWhen(env *Environment, n *ast.WhenExpr) (Value, error) {
+	var subject Value
+	hasSubject := n.Subject != nil
+	if hasSubject {
+		s, err := i.evalExpr(env, n.Subject)
+		if err != nil {
+			return Null(), err
+		}
+		subject = s
+	}
+	for _, c := range n.Cases {
+		matched := false
+		if c.IsElse {
+			matched = true
+		} else if hasSubject {
+			for _, pat := range c.Patterns {
+				if id, ok := pat.(*ast.Identifier); ok && id.Name == "_" {
+					matched = true
+					break
+				}
+				val, err := i.evalExpr(env, pat)
+				if err != nil {
+					return Null(), err
+				}
+				if equal(subject, val) {
+					matched = true
+					break
+				}
+			}
+		} else {
+			for _, pat := range c.Patterns {
+				val, err := i.evalExpr(env, pat)
+				if err != nil {
+					return Null(), err
+				}
+				if val.Truthy() {
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
+			continue
+		}
+		if c.Guard != nil {
+			gv, err := i.evalExpr(env, c.Guard)
+			if err != nil {
+				return Null(), err
+			}
+			if !gv.Truthy() {
+				continue
+			}
+		}
+		bodyEnv := NewEnvironment(env)
+		switch b := c.Body.(type) {
+		case *ast.BlockStmt:
+			return i.evalBlock(bodyEnv, b)
+		case *ast.ExpressionStmt:
+			return i.evalExpr(bodyEnv, b.Expr)
+		default:
+			_, err := i.execStmt(bodyEnv, b)
+			return Null(), err
+		}
+	}
+	return Null(), nil
+}
+
 func (i *Interpreter) evalBinary(env *Environment, n *ast.BinaryExpr) (Value, error) {
+	if n.Op == "?:" {
+		l, err := i.evalExpr(env, n.Left)
+		if err != nil {
+			return Null(), err
+		}
+		if l.Kind != VNull {
+			return l, nil
+		}
+		return i.evalExpr(env, n.Right)
+	}
 	if n.Op == "&&" {
 		l, err := i.evalExpr(env, n.Left)
 		if err != nil {
@@ -493,6 +574,12 @@ func (i *Interpreter) evalCall(env *Environment, n *ast.CallExpr) (Value, error)
 	if err != nil {
 		return Null(), err
 	}
+	// If callee came from a safe-navigation that resolved to null, propagate null.
+	if callee.Kind == VNull {
+		if m, ok := n.Callee.(*ast.MemberExpr); ok && m.Safe {
+			return Null(), nil
+		}
+	}
 	args := make([]Value, 0, len(n.Args))
 	for _, a := range n.Args {
 		v, err := i.evalExpr(env, a)
@@ -555,6 +642,9 @@ func (i *Interpreter) evalMember(env *Environment, n *ast.MemberExpr) (Value, er
 	target, err := i.evalExpr(env, n.Target)
 	if err != nil {
 		return Null(), err
+	}
+	if n.Safe && target.Kind == VNull {
+		return Null(), nil
 	}
 	if target.Kind == VDataInstance {
 		if v, ok := target.Instance.Fields[n.Property]; ok {

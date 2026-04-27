@@ -57,6 +57,7 @@ const (
 	COLON
 	SEMI
 	QUESTION
+	QDOT  // ?.
 	ELVIS // ?:
 	LPAREN
 	RPAREN
@@ -115,6 +116,7 @@ var typeNames = map[Type]string{
 	COLON:    ":",
 	SEMI:     ";",
 	QUESTION: "?",
+	QDOT:     "?.",
 	ELVIS:    "?:",
 	LPAREN:   "(",
 	RPAREN:   ")",

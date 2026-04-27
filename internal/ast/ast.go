@@ -119,6 +119,23 @@ type IfExpr struct {
 func (*IfExpr) stmtNode() {}
 func (*IfExpr) exprNode() {}
 
+type WhenCase struct {
+	Position
+	Patterns []Expr // multiple patterns: case 1, 2 => ...
+	Guard    Expr   // optional `if cond` guard
+	Body     Stmt   // *BlockStmt or *ExpressionStmt
+	IsElse   bool
+}
+
+type WhenExpr struct {
+	Position
+	Subject Expr // optional: `when x { ... }`. nil for `when { case cond => ... }`
+	Cases   []*WhenCase
+}
+
+func (*WhenExpr) stmtNode() {}
+func (*WhenExpr) exprNode() {}
+
 type ForStmt struct {
 	Position
 	Var      string
@@ -140,6 +157,7 @@ type MemberExpr struct {
 	Position
 	Target   Expr
 	Property string
+	Safe     bool // true for `?.` access
 }
 
 func (*MemberExpr) exprNode() {}

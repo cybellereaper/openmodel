@@ -152,6 +152,12 @@ func (p *Parser) parseStatement() (ast.Stmt, error) {
 		return p.parseFor()
 	case token.IF:
 		return p.parseIfStmt()
+	case token.WHEN:
+		expr, err := p.parseWhen()
+		if err != nil {
+			return nil, err
+		}
+		return expr.(*ast.WhenExpr), nil
 	}
 
 	// Look for function/data decl: IDENT (
@@ -242,11 +248,11 @@ func (p *Parser) parseVarDecl() (ast.Stmt, error) {
 	typ := ""
 	if p.peek().Type == token.COLON {
 		p.advance()
-		tt, err := p.expect(token.IDENT)
+		t, err := p.parseTypeAnnotation()
 		if err != nil {
 			return nil, err
 		}
-		typ = tt.Value
+		typ = t
 	}
 	if _, err := p.expect(token.ASSIGN); err != nil {
 		return nil, err
@@ -471,6 +477,21 @@ func (p *Parser) parseFunctionOrDataDecl() (ast.Stmt, error) {
 	return fn, nil
 }
 
+// parseTypeAnnotation parses type names, optionally suffixed with `?` for nullable.
+// e.g. Int, Int?, List, String?
+func (p *Parser) parseTypeAnnotation() (string, error) {
+	tt, err := p.expect(token.IDENT)
+	if err != nil {
+		return "", err
+	}
+	name := tt.Value
+	if p.peek().Type == token.QUESTION {
+		p.advance()
+		name += "?"
+	}
+	return name, nil
+}
+
 func (p *Parser) parseTypedParams() ([]ast.Param, error) {
 	var params []ast.Param
 	p.skipNewlines()
@@ -486,11 +507,11 @@ func (p *Parser) parseTypedParams() ([]ast.Param, error) {
 		typ := ""
 		if p.peek().Type == token.COLON {
 			p.advance()
-			tt, err := p.expect(token.IDENT)
+			t, err := p.parseTypeAnnotation()
 			if err != nil {
 				return nil, err
 			}
-			typ = tt.Value
+			typ = t
 		}
 		params = append(params, ast.Param{Name: nameTok.Value, Type: typ})
 		p.skipNewlines()
@@ -619,7 +640,26 @@ func (p *Parser) isCommandStyleCall() bool {
 
 // parseExpression with precedence climbing
 func (p *Parser) parseExpression() (ast.Expr, error) {
-	return p.parseOr()
+	return p.parseElvis()
+}
+
+func (p *Parser) parseElvis() (ast.Expr, error) {
+	left, err := p.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	for p.peek().Type == token.ELVIS {
+		op := p.advance()
+		right, err := p.parseOr()
+		if err != nil {
+			return nil, err
+		}
+		left = &ast.BinaryExpr{
+			Position: ast.Position{Line: op.Line, Column: op.Column},
+			Op:       "?:", Left: left, Right: right,
+		}
+	}
+	return left, nil
 }
 
 func (p *Parser) parseOr() (ast.Expr, error) {
@@ -802,6 +842,18 @@ func (p *Parser) parsePostfix() (ast.Expr, error) {
 				Target:   expr,
 				Property: id.Value,
 			}
+		case token.QDOT:
+			p.advance()
+			id, err := p.expect(token.IDENT)
+			if err != nil {
+				return nil, err
+			}
+			expr = &ast.MemberExpr{
+				Position: ast.Position{Line: id.Line, Column: id.Column},
+				Target:   expr,
+				Property: id.Value,
+				Safe:     true,
+			}
 		case token.LBRACK:
 			lb := p.advance()
 			idx, err := p.parseExpression()
@@ -870,8 +922,102 @@ func (p *Parser) parsePrimary() (ast.Expr, error) {
 		return p.parseListLiteral()
 	case token.IF:
 		return p.parseIf()
+	case token.WHEN:
+		return p.parseWhen()
 	}
 	return nil, fmt.Errorf("[%d:%d] unexpected token %s (%q)", t.Line, t.Column, t.Type, t.Value)
+}
+
+func (p *Parser) parseWhen() (ast.Expr, error) {
+	tok := p.advance() // when
+	pos := ast.Position{Line: tok.Line, Column: tok.Column}
+	w := &ast.WhenExpr{Position: pos}
+	if p.peek().Type != token.LBRACE {
+		subj, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		w.Subject = subj
+	}
+	if _, err := p.expect(token.LBRACE); err != nil {
+		return nil, err
+	}
+	p.skipNewlines()
+	for p.peek().Type != token.RBRACE && p.peek().Type != token.EOF {
+		c, err := p.parseWhenCase()
+		if err != nil {
+			return nil, err
+		}
+		w.Cases = append(w.Cases, c)
+		if p.peek().Type == token.RBRACE {
+			break
+		}
+		if !p.skipTermsOnce() {
+			break
+		}
+	}
+	if _, err := p.expect(token.RBRACE); err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+func (p *Parser) parseWhenCase() (*ast.WhenCase, error) {
+	t := p.peek()
+	c := &ast.WhenCase{Position: ast.Position{Line: t.Line, Column: t.Column}}
+	if p.peek().Type == token.ELSE {
+		p.advance()
+		c.IsElse = true
+	} else {
+		for {
+			pat, err := p.parsePattern()
+			if err != nil {
+				return nil, err
+			}
+			c.Patterns = append(c.Patterns, pat)
+			if p.peek().Type == token.COMMA {
+				p.advance()
+				p.skipNewlines()
+				continue
+			}
+			break
+		}
+		if p.peek().Type == token.IF {
+			p.advance()
+			g, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			c.Guard = g
+		}
+	}
+	if _, err := p.expect(token.FATARROW); err != nil {
+		return nil, err
+	}
+	if p.peek().Type == token.LBRACE {
+		body, err := p.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+		c.Body = body
+	} else {
+		body, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		l, col := body.Pos()
+		c.Body = &ast.ExpressionStmt{
+			Position: ast.Position{Line: l, Column: col},
+			Expr:     body,
+		}
+	}
+	return c, nil
+}
+
+// parsePattern is currently a value-equality pattern (any expression).
+// `_` identifier is treated as wildcard.
+func (p *Parser) parsePattern() (ast.Expr, error) {
+	return p.parseExpression()
 }
 
 func (p *Parser) parseListLiteral() (ast.Expr, error) {

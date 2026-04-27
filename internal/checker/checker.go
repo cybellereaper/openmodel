@@ -205,6 +205,19 @@ func (c *Checker) checkStmt(s *scope, stmt ast.Stmt) {
 		if n.Else != nil {
 			c.checkStmt(s, n.Else)
 		}
+	case *ast.WhenExpr:
+		if n.Subject != nil {
+			c.checkExpr(s, n.Subject)
+		}
+		for _, ca := range n.Cases {
+			for _, p := range ca.Patterns {
+				c.checkExpr(s, p)
+			}
+			if ca.Guard != nil {
+				c.checkExpr(s, ca.Guard)
+			}
+			c.checkStmt(newScope(s), ca.Body)
+		}
 	case *ast.BlockStmt:
 		bs := newScope(s)
 		for _, st := range n.Stmts {
@@ -338,6 +351,20 @@ func (c *Checker) checkExpr(s *scope, expr ast.Expr) *types.Type {
 		}
 		if n.Else != nil {
 			c.checkStmt(s, n.Else)
+		}
+		return types.Any
+	case *ast.WhenExpr:
+		if n.Subject != nil {
+			c.checkExpr(s, n.Subject)
+		}
+		for _, ca := range n.Cases {
+			for _, p := range ca.Patterns {
+				c.checkExpr(s, p)
+			}
+			if ca.Guard != nil {
+				c.checkExpr(s, ca.Guard)
+			}
+			c.checkStmt(newScope(s), ca.Body)
 		}
 		return types.Any
 	case *ast.BlockStmt:

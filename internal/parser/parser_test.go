@@ -165,6 +165,29 @@ func TestParseUseDecl(t *testing.T) {
 	}
 }
 
+func TestParseWhenExpr(t *testing.T) {
+	src := `result = when x {
+    1 => "one"
+    2, 3 => "small"
+    else => "other"
+}`
+	prog := parse(t, src)
+	v := prog.Stmts[0].(*ast.VarDecl)
+	w, ok := v.Value.(*ast.WhenExpr)
+	if !ok {
+		t.Fatalf("expected WhenExpr got %T", v.Value)
+	}
+	if len(w.Cases) != 3 {
+		t.Errorf("cases %d", len(w.Cases))
+	}
+	if !w.Cases[2].IsElse {
+		t.Errorf("expected else case")
+	}
+	if len(w.Cases[1].Patterns) != 2 {
+		t.Errorf("expected 2 patterns in case 2")
+	}
+}
+
 func TestParseCommandStyleCall(t *testing.T) {
 	prog := parse(t, `print "Hello"`)
 	es := prog.Stmts[0].(*ast.ExpressionStmt)
