@@ -624,7 +624,8 @@ func (p *Parser) isCommandStyleCall() bool {
 	switch next.Type {
 	case token.STRING, token.INT, token.FLOAT, token.IDENT,
 		token.TRUE, token.FALSE, token.NULL, token.LBRACK,
-		token.MINUS, token.BANG:
+		token.MINUS, token.BANG,
+		token.IF, token.WHEN:
 		// Now ensure it's not followed by operator situation: 
 		// `foo bar` -> command. `foo + bar` -> next is PLUS, not in list, returns false. good.
 		// `foo - bar` -> MINUS could be subtraction or unary. 

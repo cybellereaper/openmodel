@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"purelang/internal/ast"
+	"purelang/internal/bytecode"
 	"purelang/internal/checker"
 	"purelang/internal/deps"
 	"purelang/internal/fmtter"
@@ -16,6 +17,7 @@ import (
 	"purelang/internal/project"
 	"purelang/internal/runtime"
 	"purelang/internal/std"
+	"purelang/internal/vm"
 )
 
 const Version = "0.1.0"
@@ -97,6 +99,27 @@ func cmdNew(args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdRun(args []string, stdout, stderr io.Writer) int {
+	useVM := false
+	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
+		switch args[0] {
+		case "--vm":
+			useVM = true
+			args = args[1:]
+		case "--tree":
+			useVM = false
+			args = args[1:]
+		default:
+			fmt.Fprintf(stderr, "unknown flag %q\n", args[0])
+			return 1
+		}
+	}
+	if useVM {
+		if len(args) == 0 {
+			fmt.Fprintln(stderr, "pr run --vm <file.pure>")
+			return 1
+		}
+		return runFileVM(args[0], stdout, stderr)
+	}
 	if len(args) == 0 {
 		// Run the current project.
 		cwd, err := os.Getwd()
@@ -155,6 +178,30 @@ func runFile(path string, stdout, stderr io.Writer) int {
 		}
 	}
 	if err := interp.Run(prog); err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", path, err)
+		return 1
+	}
+	return 0
+}
+
+func runFileVM(path string, stdout, stderr io.Writer) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	prog, err := parser.Parse(string(data))
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", path, err)
+		return 1
+	}
+	chunk, err := bytecode.CompileProgram(prog)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", path, err)
+		return 1
+	}
+	v := vm.NewWithWriter(stdout)
+	if err := v.Run(chunk); err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", path, err)
 		return 1
 	}
